@@ -1,0 +1,667 @@
+;;**********************************************************************
+;;
+;; Title:       Encryption.dbc
+;;
+;; Type:        Class
+;;
+;; Description: Synergy Encryption routines
+;;
+;; Author:      William Hawkins, Synergex Professional Services Group
+;;
+;; Copyright    © 2009 Synergex International Corporation.  All rights reserved.
+;;
+;; WARNING:     All content constituting or related to this code ("Code") is the
+;;              property of Synergex International Corporation ("Synergex") and
+;;              is protected by U.S. and international copyright laws.
+;;              If you were given this Code by a Synergex employee then you may
+;;              use and modify it freely for use within your applications.
+;;
+;;              However, you may use the Code only for your personal use.
+;;              Any other use, unless otherwise authorized in writing by
+;;              Synergex is strictly prohibited.  You may not under any
+;;              circumstances distribute this Code, or any modified version
+;;              or part of this Code, to any third party without first
+;;              obtaining written permission to do so from Synergex.
+;;              In using this Code you accept that it is provided as is,
+;;              and without support or warranty of any kind.
+;;
+;;              Neither Synergex nor the author accept any responsibility
+;;              for any losses or damages of any nature which may arise
+;;              from the use of this Code.  This header information must
+;;              remain unaltered in the Code at all times.  Possession
+;;              of this Code, or any modified version or part of this Code,
+;;              indicates your acceptance of these terms.
+;;
+;+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+namespace SynPSG.Core.Utilities.Encryption
+
+.define DC_NONE     0
+
+    public enum EncryptionType
+        None        ,DC_NONE
+        DES3
+        AES128
+        AES192
+        AES256
+    endenum
+
+    public class SynEncrypt
+
+        private record
+            mEncryptionType ,SynPSG.Core.Utilities.Encryption.EncryptionType
+            mCode           ,string         ;encryption code (aka password/key)
+            mSaltLen        ,i4             ;0 or 8
+            mSalt           ,a8             ;salt
+            mIVLen          ,i4             ;0 or 8 (3DES) or 16 (AES)
+            mIV             ,a16            ;initialization vector
+            mPadBuffer      ,i4             ;additional pad buffer (0 or 1)
+            mBlockSize      ,i4             ;0 or 8 (3DES) or 16 (AES)
+            mDbgLogFile     ,string         ;Debugging log file
+        endrecord
+
+
+
+        public property Salt    ,a
+            method get
+            proc
+                if(mSaltLen < 1)
+                    mreturn ""
+                mreturn mSalt(1:mSaltLen)
+            endmethod
+            method set
+            proc
+                if(mSaltLen < 1 || mIVLen < 1)
+                    getLengths(mSaltLen, mIVLen)
+                clear mSalt
+                if(mSaltLen > 0)
+                    mSalt(1:mSaltLen) = value
+            endmethod
+        endproperty
+
+        public property IV    ,a
+            method get
+            proc
+                if(mIVLen < 1)
+                    mreturn ""
+                mreturn mIV(1:mIVLen)
+            endmethod
+            method set
+            proc
+                if(mSaltLen < 1 || mIVLen < 1)
+                    getLengths(mSaltLen, mIVLen)
+                clear mIV
+                if(mIVLen > 0)
+                    mIV(1:mIVLen) = value
+            endmethod
+        endproperty
+
+        public property PadBuffer  ,i
+            method get
+            proc
+                mreturn mPadBuffer
+            endmethod
+            method set
+            proc
+                if(value == 0) then
+                    mPadBuffer = 0
+                else
+                    mPadBuffer = 1
+            endmethod
+        endproperty
+
+        public property DbgLogFile    ,string
+            method get
+            proc
+                mreturn mDbgLogFile
+            endmethod
+            method set
+            proc
+                mDbgLogFile = value
+            endmethod
+        endproperty
+
+        ;;;<summary>
+        ;;;Get Encryption Code
+        ;;;</summary>
+        ;;;<remarks>
+        ;;;This is the only public mechanism to access the Encyption code.
+        ;;;Due to the sensitive nature of the EncryptionCode, you probably
+        ;;;need to store it seperately/centrally, and encapsulate it inside
+        ;;;this class, instead of the application providing it.
+        ;;;There is no way to reconstruct the EncryptionCode if you no
+        ;;;longer know the EncryptionCode value.
+        ;;;</remark>
+        public property EncryptionCode    ,string
+            method get
+            proc
+                mreturn mCode
+            endmethod
+            method set
+            proc
+                mCode = value
+            endmethod
+        endproperty
+
+        ;;;<summary>
+        ;;;Get Encryption Code (called from constructor)
+        ;;;</summary>
+        private method getEncryptionCode, string
+            endparams
+        record lm_site
+                            ,a6
+            lm_licensee     ,a50
+            lm_regstr       ,a12
+            lm_regdat       ,d8
+            lm_timout       ,d8
+        endrecord
+        record
+            status          ,i4
+        endrecord
+        proc
+            ;;use the Synergy License Manager licensee name as the encryption code
+            clear lm_site, status
+.ifndef OS_VMS
+            lm_info(status, lm_site)
+.else
+            lm_licensee = 'this is a dummy string for OpenVMS'
+.endc ;OS_VMS
+            mreturn lm_licensee(1:%trim(lm_licensee))
+        endmethod
+
+
+
+        ;;;<summary>
+        ;;;constructor (no encryption)
+        ;;;</summary>
+        public method SynEncrypt
+        endparams
+        this(EncryptionType.None)
+        proc
+            mreturn
+        endmethod
+
+        ;;;<summary>
+        ;;;"default" constructor
+        ;;;</summary>
+        ;;; <param name="aEncryptionType">Encryption type</param>
+        public method SynEncrypt
+        req in  aEncryptionType ,SynPSG.Core.Utilities.Encryption.EncryptionType
+        endparams
+            record
+                logical ,a256
+                loglen  ,i4
+            endrecord
+        proc
+            using aEncryptionType select
+            (EncryptionType.DES3),
+                mBlockSize = 8
+            (EncryptionType.AES128),
+                mBlockSize = 16
+            (EncryptionType.AES192),
+                mBlockSize = 16
+            (EncryptionType.AES256),
+                mBlockSize = 16
+            (EncryptionType.None),
+                mBlockSize = 0
+            (),
+                throw new Exception("Invalid Encryption Type")
+            endusing
+            mEncryptionType = aEncryptionType
+            getLengths(mSaltLen, mIVLen)
+            clear mSalt, mIV
+            mPadBuffer = 1
+            mCode = getEncryptionCode()
+            getlog('ENCRYPTION_DEBUG_FILENAME', logical, loglen)
+            if(loglen > 0)
+                mDbgLogFile = logical(1:loglen)
+            mreturn
+        endmethod
+
+        ;;;<summary>
+        ;;;constructor
+        ;;;</summary>
+        ;;; <param name="aEncryptionType">Encryption type</param>
+        ;;; <param name="aSalt">Salt</param>
+        ;;; <param name="aIV">IV<param>
+        public method SynEncrypt
+        req in  aEncryptionType ,SynPSG.Core.Utilities.Encryption.EncryptionType
+        req in  aSalt           ,a
+        req in  aIV             ,a
+        endparams
+        this(aEncryptionType, aSalt, aIV, TRUE)
+        proc
+            mreturn
+        endmethod
+
+        ;;;<summary>
+        ;;;primary constructor (for encryption)
+        ;;;</summary>
+        ;;; <param name="aEncryptionType">Encryption type</param>
+        ;;; <param name="aSalt">Salt</param>
+        ;;; <param name="aIV">IV<param>
+        ;;; <param name="aPadBuffer">Pad buffer if data is same length as encryption key<param>
+        public method SynEncrypt
+        req in  aEncryptionType ,SynPSG.Core.Utilities.Encryption.EncryptionType
+        req in  aSalt           ,a
+        req in  aIV             ,a
+        req in  aPadBuffer      ,i
+        endparams
+        this(aEncryptionType)
+        proc
+            using %trimz(aSalt) select
+            (1 thru mSaltLen),
+            begin
+                if(mSaltLen > ^size(mSalt))
+                    throw new Exception("Salt too small")
+                clear mSalt
+                mSalt(1:mSaltLen) = aSalt
+            end
+            (),
+                throw new Exception("Invalid Salt")
+            endusing
+            using %trimz(aIV) select
+            (1 thru mIVLen),
+            begin
+                if(mIVLen > ^size(mIV))
+                    throw new Exception("Initialization Vector too small")
+                clear mIV
+                mIV(1:mIVLen) = aIV
+            end
+            (),
+                throw new Exception("Invalid Initialization Vector")
+            endusing
+            mPadBuffer = aPadBuffer
+            mreturn
+        endmethod
+
+
+
+        ;;;<summary>
+        ;;;Encrypt data using provide encryption code
+        ;;;</summary>
+        ;;; <param name="aData">Data to be encrypted</param>
+        public method Encrypt ,a
+            req in  aData   ,a
+            endparams
+            record
+                eLen        ,i4
+            endrecord
+        proc
+            ;; Call Encrypt method that takes Synergy alpha parameters
+            mreturn Encrypt(aData, eLen)
+        endmethod
+
+        ;;;<summary>
+        ;;;Encrypt data using provide encryption code (primary routine)
+        ;;;</summary>
+        ;;; <param name="aData">Data to be encrypted</param>
+        public method Encrypt ,a
+            req in  aData   ,a
+            req out aLen    ,i
+            endparams
+            record
+                dHdl        ,i4
+                dLen        ,i4
+                eType       ,i4
+            endrecord
+        proc
+            if(usingEncryption() == FALSE)
+            begin
+                aLen = ^size(aData)
+                mreturn aData
+            end
+            eType = getEncryptionType()
+            dHdl = %mem_proc(DM_ALLOC+DM_BLANK, getEncryptedLength(aData))
+            dLen = 0
+            dbg_data_encrypt(eType, mCode, aData, ^m(dHdl), dLen, mSalt(1:mSaltLen), mIV(1:mIVLen), mPadBuffer)
+            if(mSaltLen > 0 && mIVLen > 0) then
+                data_encrypt(eType, mCode, aData, ^m(dHdl), dLen, mSalt(1:mSaltLen), mIV(1:mIVLen), mPadBuffer)
+            else
+                data_encrypt(eType, mCode, aData, ^m(dHdl), dLen,,, mPadBuffer)
+            aLen = dLen
+            mreturn ^m(dHdl)
+        endmethod
+
+        ;;;<summary>
+        ;;;Encrypt data using provide encryption code
+        ;;;</summary>
+        ;;; <param name="aData">Data to be encrypted</param>
+        public method Encrypt ,string
+            req in  aData   ,string
+            endparams
+            record
+                dHdl        ,i4
+                eLen        ,i4
+                EncryptedString ,string
+            endrecord
+        proc
+            if(usingEncryption() == FALSE)
+                mreturn aData
+
+            dHdl = %mem_proc(DM_ALLOC, getEncryptedLength(aData))
+            ^m(dHdl) = aData
+
+            ;; Call Encrypt method that takes Synergy alpha parameters
+            EncryptedString = Encrypt(^m(dHdl), eLen)
+            mreturn EncryptedString
+        endmethod
+
+
+
+        ;;;<summary>
+        ;;;Encrypt data using provide encryption code
+        ;;;</summary>
+        ;;; <param name="aData">Data to be decrypted</param>
+        public method Decrypt ,a
+            req in  aData   ,a
+            endparams
+            record
+                eLen        ,i4
+            endrecord
+        proc
+            ;; Call Decrypt method that takes Synergy alpha parameters
+            mreturn Decrypt(aData, eLen)
+        endmethod
+
+        ;;;<summary>
+        ;;;Decrypt data using provide encryption code (primary routine)
+        ;;;</summary>
+        ;;; <param name="aData">Data to be decrypted</param>
+        ;;; <param name="aLen">Length of decrypted data</param>
+        public method Decrypt ,a
+            req in  aData   ,a
+            req out aLen    ,i
+            endparams
+            record
+                dHdl        ,i4
+                dLen        ,i4
+                eType       ,i4
+            endrecord
+            structure Decrypted
+                data        ,a1
+            endstructure
+        proc
+            if(usingEncryption() == FALSE)
+            begin
+                aLen = ^size(aData)
+                mreturn aData
+            end
+            eType = getEncryptionType()
+            ;; get the size of the decrypted data
+            dlen = 0
+            if(mSaltLen > 0 && mIVLen > 0) then
+                data_decrypt(eType, mCode, aData,, dLen, mSalt(1:mSaltLen), mIV(1:mIVLen), mPadBuffer)
+            else
+                data_decrypt(eType, mCode, aData,, dLen,,, mPadBuffer)
+            ;; decrypt data
+            dHdl = %mem_proc(DM_ALLOC+DM_BLANK, dLen)
+            dLen = 0
+            if(mSaltLen > 0 && mIVLen > 0) then
+            begin
+                dbg_data_decrypt(eType, mCode, aData, ^m(dHdl), dLen, mSalt(1:mSaltLen), mIV(1:mIVLen), mPadBuffer)
+                data_decrypt(eType, mCode, aData, ^m(dHdl), dLen, mSalt(1:mSaltLen), mIV(1:mIVLen), mPadBuffer)
+            end
+            else
+            begin
+                dbg_data_decrypt(eType, mCode, aData, ^m(dHdl), dLen,,, mPadBuffer)
+                data_decrypt(eType, mCode, aData, ^m(dHdl), dLen,,, mPadBuffer)
+            end
+            aLen = dLen
+            mreturn ^m(Decrypted.data(1:dLen), dHdl)
+        endmethod
+
+        ;;;<summary>
+        ;;;Encrypt data using provide encryption code
+        ;;;</summary>
+        ;;; <param name="aData">Data to be decrypted</param>
+        public method Decrypt ,string
+            req in  aData   ,string
+            endparams
+            record
+                dHdl        ,i4
+                eLen        ,i4
+                DecryptedString ,string
+            endrecord
+        proc
+            if(usingEncryption() == FALSE)
+                mreturn aData
+
+            dHdl = %mem_proc(DM_ALLOC, ^size(aData))
+            ^m(dHdl) = aData
+
+            ;; Call Decrypt method that takes Synergy alpha parameters
+            DecryptedString = Decrypt(^m(dHdl), eLen)
+            mreturn DecryptedString
+        endmethod
+
+
+
+        ;;;<summary>
+        ;;;Encryption length, returns zero if not using encryption
+        ;;;</summary>
+        ;;; <param name="aData">Data top be encrypted</param>
+        public method getEncryptedLength ,int
+            req in  aData   ,a
+            endparams
+            record
+                stringData  ,string
+            endrecord
+        proc
+            stringData = aData
+            mreturn getEncryptedLength(stringData)
+        endmethod
+
+        ;;;<summary>
+        ;;;Encryption length, returns zero if not using encryption
+        ;;;</summary>
+        public method getEncryptedLength ,int
+            req in  aData   ,string
+            endparams
+            record
+                dataSize    ,int
+                padBuffer   ,int
+            endrecord
+        proc
+            dataSize = ^size(aData)
+            ;;check to see if we need any padding
+            if(mPadBuffer == 0) then
+            begin
+                ;; if dataSize is an exact multiple of blockSize, no padding is required
+                if((%trunc(dataSize / mBlockSize) * mBlockSize) == dataSize) then
+                    padBuffer = 0
+                else
+                    padBuffer = 1
+            end
+            else
+                padBuffer = mPadBuffer
+            ;;round up to next blocksize (if needed) and add Pad buffer (if needed)
+            mreturn ((%trunc(dataSize / mBlockSize) + padBuffer) * mBlockSize)
+        endmethod
+
+
+
+        ;;;<summary>
+        ;;;Is Encryption in use
+        ;;;</summary>
+        private method usingEncryption ,boolean
+            endparams
+        proc
+            if(getEncryptionType() == DC_NONE)
+                mreturn FALSE
+            if(mCode == ^NULL)
+                mreturn FALSE
+            mreturn TRUE
+        endmethod
+
+
+        ;;;<summary>
+        ;;;Get Salt and IV lengths
+        ;;;</summary>
+        ;;; <param name="aSaltLen">Length of Salt</param>
+        ;;; <param name="aIVLen">Length of IV</param>
+        private method getLengths ,void
+            req out     aSaltLen            ,i
+            req out     aIVLen              ,i
+            endparams
+            record
+                eType           ,i4
+            endrecord
+        proc
+            eType = getEncryptionType()
+            if(eType == DC_NONE) then
+                clear aSaltLen, aIVLen
+            else
+            begin
+                data_saltiv(eType,, aSaltLen,, aIVLen)
+                dbg_data_saltiv(eType,, aSaltLen,, aIVLen)
+            end
+            mreturn
+        endmethod
+
+
+        ;;;<summary>
+        ;;;Get Encryption Type (for Synergy API)
+        ;;;</summary>
+        private method getEncryptionType ,int
+            endparams
+        proc
+            using mEncryptionType select
+            (EncryptionType.DES3),
+                mreturn DC_3DES
+            (EncryptionType.AES128),
+                mreturn DC_AES128
+            (EncryptionType.AES192),
+                mreturn DC_AES192
+            (EncryptionType.AES256),
+                mreturn DC_AES256
+            endusing
+            mreturn DC_NONE
+        endmethod
+
+        ;;;<summary>
+        ;;;Debug logging for data_encrypt
+        ;;;</summary>
+        ;;; <param name="aEncryptionType">Encryption type</param>
+        ;;; <param name="aCode">Encryption code</param>
+        ;;; <param name="aData">Data to be encrypted</param>
+        ;;; <param name="aEncodedData">Encoded data</param>
+        ;;; <param name="aLen">Length of encoded data</param>
+        ;;; <param name="aSalt">Salt</param>
+        ;;; <param name="aIV">IV</param>
+        ;;; <param name="aPadBuffer">Pad Buffer</param>
+        private method dbg_data_encrypt ,void
+            req in      aEncryptionType     ,i
+            req in      aCode               ,a
+            req in      aData               ,a
+            req in      aEncodedData        ,a
+            req in      aLen                ,i
+            opt in      aSalt               ,a
+            opt in      aIV                 ,a
+            req in      aPadBuffer          ,i
+            endparams
+
+            record
+                chan    ,i4
+            endrecord
+        proc
+            if(mDbgLogFile == ^NULL || mDbgLogFile == ' ')
+                mreturn
+            open(chan=%syn_freechn, A, mDbgLogFile)
+            if(^passed(aSalt) && ^passed(aIV)) then
+            begin
+                writes(chan, 'data_encrypt('+%string(aEncryptionType)+',"'+aCode+'","'+aData+'","'+aEncodedData+'",'+%string(aLen)+',"'+aSalt+'","'+aIV+'",'+%string(aPadBuffer)+')')
+                writes(chan, 'n,'+%string(^size(aCode))+','+%string(^size(aData))+','+%string(^size(aEncodedData))+',n,'+%string(^size(aSalt))+','+%string(^size(aIV))+',n')
+            end
+            else
+            begin
+                writes(chan, 'data_encrypt('+%string(aEncryptionType)+',"'+aCode+'","'+aData+'","'+aEncodedData+'",'+%string(aLen)+',,,'+%string(aPadBuffer)+')')
+                writes(chan, 'n,'+%string(^size(aCode))+','+%string(^size(aData))+','+%string(^size(aEncodedData))+',n,,,,n')
+            end
+            close chan
+        endmethod
+
+
+        ;;;<summary>
+        ;;;Debug logging for data_decrypt
+        ;;;</summary>
+        ;;; <param name="aEncryptionType">Encryption type</param>
+        ;;; <param name="aCode">Encryption code</param>
+        ;;; <param name="aData">Data to be encrypted</param>
+        ;;; <param name="aDecodedData">Decoded data</param>
+        ;;; <param name="aLen">Length of decoded data</param>
+        ;;; <param name="aSalt">Salt</param>
+        ;;; <param name="aIV">IV</param>
+        ;;; <param name="aPadBuffer">Pad Buffer</param>
+        private method dbg_data_decrypt ,void
+            req in      aEncryptionType     ,i
+            req in      aCode               ,a
+            req in      aData               ,a
+            req in      aDecodedData        ,a
+            req in      aLen                ,i
+            opt in      aSalt               ,a
+            opt in      aIV                 ,a
+            req in      aPadBuffer          ,i
+            endparams
+
+            record
+                chan    ,i4
+            endrecord
+        proc
+            if(mDbgLogFile == ^NULL || mDbgLogFile == ' ')
+                mreturn
+            open(chan=%syn_freechn, A, mDbgLogFile)
+            if(^passed(aSalt) && ^passed(aIV)) then
+            begin
+                writes(chan, 'data_decrypt('+%string(aEncryptionType)+',"'+aCode+'","'+aData+'","'+aDecodedData+'",'+%string(aLen)+',"'+aSalt+'","'+aIV+'",'+%string(aPadBuffer)+')')
+                writes(chan, 'n,'+%string(^size(aCode))+','+%string(^size(aData))+','+%string(^size(aDecodedData))+',n,'+%string(^size(aSalt))+','+%string(^size(aIV))+',n')
+            end
+            else
+            begin
+                writes(chan, 'data_decrypt('+%string(aEncryptionType)+',"'+aCode+'","'+aData+'","'+aDecodedData+'",'+%string(aLen)+',,,'+%string(aPadBuffer)+')')
+                writes(chan, 'n,'+%string(^size(aCode))+','+%string(^size(aData))+','+%string(^size(aDecodedData))+',n,,,n')
+            end
+            close chan
+        endmethod
+
+
+        ;;;<summary>
+        ;;;Debug logging for data_saltiv
+        ;;;</summary>
+        ;;; <param name="aEncryptionType">Encryption type</param>
+        ;;; <param name="aSalt">Salt</param>
+        ;;; <param name="aSaltLEn">Length of Salt</param>
+        ;;; <param name="aIV">IV</param>
+        ;;; <param name="aIVLen">Length of IV</param>
+        private method dbg_data_saltiv ,void
+            req in      aEncryptionType     ,i
+            opt in      aSalt               ,a
+            req out     aSaltLen            ,i
+            opt in      aIV                 ,a
+            req out     aIVLen              ,i
+            endparams
+
+            record
+                chan    ,i4
+            endrecord
+        proc
+            if(mDbgLogFile == ^NULL || mDbgLogFile == ' ')
+                mreturn
+            open(chan=%syn_freechn, A, mDbgLogFile)
+            if(^passed(aSalt) && ^passed(aIV)) then
+            begin
+                writes(chan, 'data_saltiv('+%string(aEncryptionType)+',"'+aSalt+'",'+%string(aSaltLen)+',"'+aIV+'",'+%string(aIVLen)+')')
+                writes(chan, 'n,'+%string(^size(aSalt))+',n,'+%string(^size(aIV))+',n')
+            end
+            else
+            begin
+                writes(chan, 'data_saltiv('+%string(aEncryptionType)+',,'+%string(aSaltLen)+',,'+%string(aIVLen)+')')
+                writes(chan, 'n,,n,,n')
+            end
+            close chan
+        endmethod
+
+    endclass
+
+endnamespace
+

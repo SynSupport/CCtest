@@ -1,0 +1,804 @@
+;+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+import SynPSG.Core.Utilities.CC
+import SynPSG.Core.Utilities.Encryption
+
+;+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+;;encryption styles
+.define ENCRYPT_FIELD_INPLACE   1
+.define ENCRYPT_FIELD           2
+.define ENCRYPT_RECORD          3
+
+;;when using AES encryption, use this AES type
+.define ENCRYPTION_AES_TYPE     EncryptionType.AES128
+
+;;include this define to enable debug logging
+;.define ENCRYPTION_DEBUG_FILE  'encryption.log'
+
+;encryption type being used
+;.define USING_ENCRYPTION_DES3
+;.define USING_ENCRYPTION_AES
+
+;used to manage record layout
+;.define USING_ENCRYPTION_FIELD
+;.define USING_ENCRYPTION_RECORD
+
+;+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+main
+
+.include 'WND:tools.def'
+.include 'WND:inpctl.def'
+
+global common
+    chan            ,i4     ;channel for load method
+    encryptStyle    ,i4     ;see ENCRYPT_* defines
+endcommon
+
+stack record
+    Encryption      ,@SynPSG.Core.Utilities.Encryption.SynEncrypt
+endrecord
+
+stack record ccData
+.include 'CCrec.inc'
+endrecord
+
+record
+    pos             ,i4
+    errnum          ,i4
+    bldid           ,i4
+    colid           ,i4
+    wndid           ,i4
+    lstid           ,i4
+    colid2          ,i4
+    wndid2          ,i4
+    req             ,i4
+    ccTypeHdl       ,i4
+    ccTypeMax       ,i4
+    addMode         ,boolean
+    mbuffer         ,a1024
+endrecord
+
+structure ccTypeArray
+    description     ,a15
+endstructure
+
+proc
+
+    u_start
+
+    call startup
+
+    ;;build an array of credit card names
+    ccTypeHdl = %mem_proc(DM_ALLOC+DM_BLANK, ^size(ccTypeArray))
+    ccTypeMax = 1
+    repeat
+    begin
+        ^m(ccTypeArray[ccTypeMax], ccTypeHdl) = SynPSG.Core.Utilities.CC.SynCC.getCCname(ccTypeMax)
+        if(!^m(ccTypeArray[ccTypeMax], ccTypeHdl))
+            exitloop
+        ccTypeMax += 1
+        ccTypeHdl = %mem_proc(DM_RESIZ+DM_BLANK, ccTypeMax*^size(ccTypeArray), ccTypeHdl)
+    end
+    if(ccTypeMax > 1)
+        ccTypeMax -= 1
+
+    ;; build UI Toolkit list/menu to process a list of credit cards
+    mb_column(mbuffer, 'COL_MAIN', "File")
+    mb_entry(mbuffer, 'O_EXIT', "Exit", F4_KEY)
+    mb_entry(mbuffer, 'ADD_ITEM', "Create", F62_KEY)
+    mb_entry(mbuffer, 'MOD_ITEM', "Modify")
+    mb_entry(mbuffer, 'DEL_ITEM', "Delete", F63_KEY)
+    using encryptStyle select
+    (ENCRYPT_FIELD),
+        nop
+    (ENCRYPT_RECORD),
+        nop
+    (ENCRYPT_FIELD_INPLACE),
+    begin
+        mb_line(mbuffer)
+        mb_entry(mbuffer, 'ENCRYPT', "In-place Encryption of data",,,,, TRUE)
+        mb_entry(mbuffer, 'DECRYPT', "In-place Decryption of data")
+    end
+    (), ;;none
+    begin
+        mb_line(mbuffer)
+        mb_entry(mbuffer, 'ENCRYPT', "In-place Encryption of data")
+        mb_entry(mbuffer, 'DECRYPT', "In-place Decryption of data",,,,, TRUE)
+    end
+    endusing
+    mb_end(mbuffer, colid)
+
+    ib_input(bldid, 'CCLIST', 1, 100)
+    ib_dsp_area(bldid, 1, 1, 1, 75)
+    pos = 1
+    ib_field(bldid, 'customer', D_FLD_TYPE, D_ALPHA, D_FLD_SIZE, ^size(customer),
+    &              D_FLD_FPOS, 1, pos)
+    pos += (^size(customer) + 1)
+    ib_field(bldid, 'ccHolder', D_FLD_TYPE, D_ALPHA, D_FLD_SIZE, ^size(ccHolder),
+    &              D_FLD_FPOS, 1, pos)
+    pos += (^size(ccHolder) + 1)
+    ib_field(bldid, 'ccType', D_FLD_TYPE, D_DECIMAL, D_FLD_SIZE, ^size(ccType),
+    &              D_FLD_FPOS, 1, pos,
+    &              D_FLD_SELECT, 1, 1, 1, ^size(ccTypeArray), ccTypeMax, ^m(ccTypeArray[1], ccTypeHdl),
+    &              D_FLD_ENUM, ^size(ccTypeArray), 1, 1)
+    pos += (^size(ccTypeArray[1]) + 1)
+    ib_field(bldid, 'ccExpiry', D_FLD_TYPE, D_DECIMAL, D_FLD_SIZE, ^size(ccExpiry),
+    &              D_FLD_FPOS, 1, pos, D_FLD_BZRO)
+    pos += (^size(ccExpiry) + 1)
+    ib_field(bldid, 'ccNumber', D_FLD_TYPE, D_DECIMAL, D_FLD_SIZE, ^size(ccNumber),
+    &              D_FLD_FPOS, 1, pos, D_FLD_BZRO)
+    pos += (^size(ccNumber) + 1)
+    ib_end(bldid, wndid)
+
+    l_class(bldid, 'LIST_CLASS',,, 10, 1,,,,,, 'ccTest_load',, errnum)
+
+    l_create(lstid, wndid, ccData,, 'LIST_CLASS',,,,,,, errnum)
+
+    getlog('ACTIVEX_LIST', mbuffer, errnum)
+    if(errnum > 0 && mbuffer != '0') then
+        l_sect(lstid, 'Customer|Cardholder|Type|Exp|Card#|', D_HEADER)
+    else
+        l_sect(lstid, 'Customer   Cardholder                               Type            Exp      Card#', D_HEADER)
+
+    l_button(lstid, DSB_ADD, 'O_EXIT', DSB_TEXT, 'Exit')
+    l_button(lstid, DSB_ADD, 'ADD_ITEM', DSB_TEXT, 'Add')
+    l_button(lstid, DSB_ADD, 'DEL_ITEM', DSB_TEXT, 'Delete')
+
+    ;;show list of credit cards on file
+    l_queue(lstid, D_LBOTTOM)
+    req = D_LTOP
+    repeat
+    begin
+        l_select(lstid, req, ccData,,,,,,,,,,,,, Encryption)
+        if(g_select) then
+        begin
+            using g_entnam select
+            ('O_EXIT '),
+                exitloop
+            ('MOD_ITEM '),
+                call mod_item
+            ('ADD_ITEM '),
+                call add_item
+            ('DEL_ITEM '),
+                call del_item
+            ('ENCRYPT '),
+            begin
+                using encryptStyle select
+                (ENCRYPT_FIELD_INPLACE),
+                    nop
+                (ENCRYPT_FIELD),
+                    nop
+                (ENCRYPT_RECORD),
+                    nop
+                (),
+                begin
+                    clear Encryption
+                    encryptStyle = ENCRYPT_FIELD_INPLACE
+                    setupEncryption(encryptStyle, Encryption)
+                    call inPlaceEncrypt
+                    call set_window_title
+                    m_disable(colid, 'ENCRYPT')
+                    m_enable(colid, 'DECRYPT')
+                    l_restart(lstid)
+                    req = D_LNOP
+                end
+                endusing
+            end
+            ('DECRYPT '),
+            begin
+                using encryptStyle select
+                (ENCRYPT_FIELD_INPLACE),
+                begin
+                    call inPlaceDecrypt
+                    clear Encryption
+                    encryptStyle = 0
+                    setupEncryption(encryptStyle, Encryption)
+                    call set_window_title
+                    m_disable(colid, 'DECRYPT')
+                    m_enable(colid, 'ENCRYPT')
+                    l_restart(lstid)
+                    req = D_LNOP
+                end
+                (ENCRYPT_FIELD),
+                    nop
+                (ENCRYPT_RECORD),
+                    nop
+                (),
+                    nop
+                endusing
+            end
+            endusing
+        end
+        else
+        begin
+            data isNull ,i4
+            l_status(lstid, D_LNULL, isNull)
+            if(!isNull)
+                call mod_item
+        end
+    end
+
+    flags(7000000,1)
+    stop D_EXIT_SUCCESS
+
+;-----------------------------------------------------------------------------
+
+edit_item,
+
+    m_column(D_REMOVE, colid)
+
+    mb_column(mbuffer, 'COL_OK', "File")
+    mb_entry(mbuffer, 'O_EXIT', "OK", F4_KEY)
+    mb_entry(mbuffer, 'O_QUIT', "Cancel", ESC_KEY)
+    mb_end(mbuffer, colid2)
+
+    ib_input(bldid, 'CCEDIT', 7, 60)
+    ib_field(bldid, 'customer', D_FLD_TYPE, D_ALPHA, D_FLD_SIZE, ^size(customer),
+    &              D_FLD_FPOS, 2, 15, D_FLD_POS, 2, 2, D_FLD_PROMPT, "Customer")
+    ib_field(bldid, 'ccHolder', D_FLD_TYPE, D_ALPHA, D_FLD_SIZE, ^size(ccHolder),
+    &              D_FLD_FPOS, 3, 15, D_FLD_POS, 3, 2, D_FLD_PROMPT, "Cardholder")
+    ib_field(bldid, 'ccType', D_FLD_TYPE, D_DECIMAL, D_FLD_SIZE, ^size(ccType),
+    &              D_FLD_FPOS, 4, 15, D_FLD_POS, 4, 2, D_FLD_PROMPT, "Type",
+    &              D_FLD_SELECT, 1, 1, 1, ^size(ccTypeArray), ccTypeMax, ^m(ccTypeArray[1],ccTypeHdl),
+    &              D_FLD_ENUM, ^size(ccTypeArray), 1, 1)
+    ib_field(bldid, 'ccExpiry', D_FLD_TYPE, D_DECIMAL, D_FLD_SIZE, ^size(ccExpiry),
+    &              D_FLD_FPOS, 5, 15, D_FLD_POS, 5, 2, D_FLD_PROMPT, "Expiry", D_FLD_BZRO)
+    ib_field(bldid, 'ccNumber', D_FLD_TYPE, D_DECIMAL, D_FLD_SIZE, ^size(ccNumber),
+    &              D_FLD_FPOS, 6, 15, D_FLD_POS, 6, 2, D_FLD_PROMPT, "Cardnumber", D_FLD_BZRO,
+    &              D_FLD_CHANGE, 'ccChange')
+    ib_end(bldid, wndid2)
+    b_button(wndid2, DSB_ADD, 'O_EXIT', DSB_TEXT, 'OK')
+    b_button(wndid2, DSB_ADD, 'O_QUIT', DSB_TEXT, 'Cancel')
+
+    u_window(D_PLACE, wndid2, 1 ,1)
+
+    if(addMode == TRUE) then
+        i_init(wndid2)
+    else
+        i_display(wndid2,, ccData)
+
+    i_next(wndid2,, '*FRST*')
+
+    if (addMode == FALSE)
+        i_disable(wndid2, 'customer')
+
+    repeat
+    begin
+        i_input(wndid2,, ccdata,,,, D_NOTERM)
+        if(g_select)
+        begin
+            using g_entnam select
+            ('O_QUIT'),
+                exitloop
+            ('O_EXIT'),
+            begin
+                if(!ccData.customer)
+                begin
+                    u_message("Enter Customer")
+                    i_next(wndid2,, 'customer')
+                    nextloop
+                end
+                if(!ccData.ccHolder)
+                begin
+                    u_message("Enter Cardholder name")
+                    i_next(wndid2,, 'ccHolder')
+                    nextloop
+                end
+                if(!ccData.ccType)
+                begin
+                    u_message("Enter Credit card type")
+                    i_next(wndid2,, 'ccType')
+                    nextloop
+                end
+                if(!ccData.ccExpiry)
+                begin
+                    u_message("Enter Credit card expiry")
+                    i_next(wndid2,, 'ccExpiry')
+                    nextloop
+                end
+                if(!ccData.ccNumber)
+                begin
+                    u_message("Enter Credit card #")
+                    i_next(wndid2,, 'ccNumber')
+                    nextloop
+                end
+                exitloop
+            end
+            endusing
+        end
+        i_next(wndid2,, '*FRST*')
+    end
+
+    u_window(D_DELETE, wndid2)
+    m_column(D_DELETE, colid2)
+
+    m_column(D_PLACE, colid)
+    return
+
+;-----------------------------------------------------------------------------
+
+add_item,
+
+    l_process(lstid, req=D_LAPPEND, ccData)
+
+    addMode = TRUE
+    call edit_item
+    using g_entnam select
+    ('O_EXIT'),
+    begin
+        call encrypt_data
+
+        store(chan, ccData) [ERR=storeError]
+
+        call decrypt_data
+
+        i_display(wndid,, ccData)
+        req = D_LNOP
+        exit
+storeError,
+        u_message("Error "+%string(%error)+" updating file")
+        req = D_LDELITEM
+    end
+    (),
+    begin
+        req = D_LDELITEM
+    end
+    endusing
+
+    return
+
+;-----------------------------------------------------------------------------
+
+mod_item,
+
+    read(chan, ccData, ccData.customer) [ERR=writeError]
+
+    call decrypt_data
+
+    addMode = FALSE
+    call edit_item
+    using g_entnam select
+    ('O_EXIT'),
+    begin
+        call encrypt_data
+
+        write(chan, ccData) [ERR=writeError]
+
+        call decrypt_data
+
+        i_display(wndid,, ccData)
+        req = D_LNOP
+        exit
+writeError,
+        u_message("Error "+%string(%error)+" updating file")
+        req = D_LCANCEL
+    end
+    (),
+    begin
+        req = D_LCANCEL
+    end
+    endusing
+    return
+
+del_item,
+
+    read(chan, ccData, ccData.customer) [ERR=deleteError]
+    delete(chan) [ERR=deleteError]
+    req = D_LDELITEM
+    if(FALSE)
+    begin
+deleteError,
+        u_message("Error "+%string(%error)+" updating file")
+        req = D_LNOP
+    end
+    return
+
+;-----------------------------------------------------------------------------
+
+encrypt_data,
+
+    using encryptStyle select
+    (ENCRYPT_FIELD_INPLACE),
+        ccData.encryptedCC = Encryption.Encrypt(ccData.encryptedCC)
+    (ENCRYPT_FIELD),
+        ccData.encryptedCC = Encryption.Encrypt(ccData.encryptedCC.ccNumber)
+    (ENCRYPT_RECORD),
+        ccData.encryptedData = Encryption.Encrypt(ccData.encryptData)
+    endusing
+
+    return
+
+;-----------------------------------------------------------------------------
+
+decrypt_data,
+
+    using encryptStyle select
+    (ENCRYPT_FIELD_INPLACE),
+        ccData.encryptedCC = Encryption.Decrypt(ccData.encryptedCC)
+    (ENCRYPT_FIELD),
+        ccData.encryptedCC = Encryption.Decrypt(ccData.encryptedCC)
+    (ENCRYPT_RECORD),
+        ccData.encryptData = Encryption.Decrypt(ccData.encryptedData)
+    endusing
+
+    return
+
+;-----------------------------------------------------------------------------
+
+startup,
+
+    cmdln(mbuffer)
+
+    pos = %instr(1, mbuffer, '-delete ')
+    if(pos)
+    begin
+        delet('ccData.ism')
+        delet('ccData_F.ism')
+        delet('ccData_R.ism')
+    end
+
+    if(%instr(1, mbuffer, '-i '))
+        encryptStyle = ENCRYPT_FIELD_INPLACE
+    if(%instr(1, mbuffer, '-f '))
+        encryptStyle = ENCRYPT_FIELD
+    if(%instr(1, mbuffer, '-r '))
+        encryptStyle = ENCRYPT_RECORD
+    if(encryptStyle == 0)
+    begin
+        getlog('ENCRYPT_STYLE', mbuffer, pos)
+        if(pos)
+            using mbuffer select
+            ('i'),
+                encryptStyle = ENCRYPT_FIELD_INPLACE
+            ('f'),
+                encryptStyle = ENCRYPT_FIELD
+            ('r'),
+                encryptStyle = ENCRYPT_RECORD
+            endusing
+    end
+
+    clear errnum
+.ifdef USING_ENCRYPTION_DES3
+    errnum += 1
+.endc
+.ifdef USING_ENCRYPTION_AES
+    errnum += 1
+.endc
+    using errnum select
+    (1),
+    begin
+        if(encryptStyle == 0)
+        begin
+            u_message("Environment Variable ENCRYPT_STYLE is not set - valid values are i|f|r")
+            stop D_EXIT_FAILURE
+        end
+        ;;encryption required
+    end
+    (0),
+    begin
+        if(encryptStyle != 0 && encryptStyle != ENCRYPT_FIELD_INPLACE)
+        begin
+            u_message("Encryption defines ENCRYPTION_* are not set")
+            stop D_EXIT_FAILURE
+        end
+        ;;no encryption required
+    end
+    (),
+    begin
+        u_message("More than one Encryption define ENCRYPTION_* is set")
+        stop D_EXIT_FAILURE
+    end
+    endusing
+
+    clear errnum, pos
+.ifdef FLDS_ENCRYPT_FIELD_INPLACE
+    errnum += 1
+    pos = ENCRYPT_FIELD_INPLACE
+.endc
+.ifdef USING_ENCRYPTION_FIELD
+    errnum += 1
+    pos = ENCRYPT_FIELD
+.endc
+.ifdef USING_ENCRYPTION_RECORD
+    errnum += 1
+    pos = ENCRYPT_RECORD
+.endc
+    using errnum select
+    (1, 0),
+    begin
+        if((pos == ENCRYPT_FIELD_INPLACE && encryptStyle == 0) ||
+        &  (pos == 0 && encryptStyle == ENCRYPT_FIELD_INPLACE) )
+            exit ;;no encryption or encrypt in place = ok - records match
+        if(pos != encryptStyle)
+        begin
+            u_message("Encryption defines FLDS_ENCRYPT_* do not match environment variable ENCRYPT_STYLE")
+            stop D_EXIT_FAILURE
+        end
+    end
+    (),
+    begin
+        u_message("More than one Encryption define FLDS_ENCRYPT_* is set")
+        stop D_EXIT_FAILURE
+    end
+    endusing
+
+.ifdef ENCRYPTION_DEBUG_FILE
+
+    ;;delete logfile (if exists)
+    delet(ENCRYPTION_DEBUG_FILE)
+
+    ;;Logical ENCRYPTION_DEBUG_FILENAME is used in the SynEncrypt constructor, to enable debug logging
+    setlog('ENCRYPTION_DEBUG_FILENAME', ENCRYPTION_DEBUG_FILE, errnum)
+
+.else
+
+    ;;no debug logging
+    setlog('ENCRYPTION_DEBUG_FILENAME',, errnum)
+
+.endc ;ENCRYPTION_DEBUG_FILE
+
+    setupEncryption(encryptStyle, Encryption)
+
+    begin
+        ;;Assign file name - uses different files, as encryption changes the length of the record.
+        ;; and changing the filename will ensure the correct format between different encryption tests
+        data ccDataFileName ,a8
+        using encryptStyle select
+        (ENCRYPT_FIELD),
+            ccDataFileName = 'ccData_F'
+        (ENCRYPT_RECORD),
+            ccDataFileName = 'ccData_R'
+        (), ;;ENCRYPT_FIELD_INPLACE, none
+            ccDataFileName = 'ccData'
+        endusing
+        ;; open credit card file
+        u_open(chan=%syn_freechn, 'U:I', ccDataFileName,,, errnum)
+        if(errnum)
+        begin
+            isamc(ccDataFileName, ^size(ccData), 1, 'start=1,len='+%string(^size(ccData.customer))+',nodups')
+            u_open(chan=%syn_freechn, 'U:I', ccDataFileName)
+        end
+
+        using encryptStyle select
+        (ENCRYPT_FIELD),
+            nop
+        (ENCRYPT_RECORD),
+            nop
+        (ENCRYPT_FIELD_INPLACE),
+            nop
+        (), ;;none
+        begin
+            ;;assume not encrypted
+            encryptStyle = 0
+
+            ;;try reading record, and see if the data is really encrypted
+            reads(chan, ccData, noData)
+
+            pos = 1
+            while(pos <= ^size(ccNumber))
+            begin
+                using ^a(ccNumber(pos:1)) select
+                ('0' thru '9', ' '),
+                    nop
+                (),
+                begin
+                    ;;invalid character, assume encrytped
+                    encryptStyle = ENCRYPT_FIELD_INPLACE
+                    exitloop
+                end
+                endusing
+                pos += 1
+            end
+noData,
+        end
+        endusing
+
+    end
+
+    call set_window_title
+
+    ;;check that the encrypted fields are the appropriate size
+    using encryptStyle select
+    (ENCRYPT_FIELD, ENCRYPT_FIELD_INPLACE),
+    begin
+        if (^size(encryptedCC) != Encryption.getEncryptedLength(ccNumber))
+        begin
+            u_message("EncryptedCC field "+%string(^size(encryptedCC))+" != "+%string(Encryption.getEncryptedLength(ccNumber)))
+            stop D_EXIT_FAILURE
+        end
+    end
+    (ENCRYPT_RECORD),
+    begin
+        if (^size(encryptedData) != Encryption.getEncryptedLength(encryptData))
+        begin
+            u_message("Encrypted Record "+%string(^size(encryptedData))+" != "+%string(Encryption.getEncryptedLength(encryptedData)))
+            stop D_EXIT_FAILURE
+        end
+    end
+    endusing
+
+    ;;if we get here, then the test program harness is ok
+    return
+
+;-----------------------------------------------------------------------------
+
+set_window_title,
+
+    ;; update application title, with encryption method
+    using encryptStyle select
+    (ENCRYPT_FIELD_INPLACE),
+        mbuffer = 'Encrypted field (in place)'
+    (ENCRYPT_FIELD),
+        mbuffer = 'Encrypted field'
+    (ENCRYPT_RECORD),
+        mbuffer = 'Encrypted record'
+    (),
+        mbuffer = 'No Encryption'
+    endusing
+.ifdef USING_ENCRYPTION_DES3
+    mbuffer = '3DES ' + mbuffer
+.endc
+.ifdef USING_ENCRYPTION_AES
+    mbuffer = 'AES ' + mbuffer
+.endc
+    e_sect(mbuffer(1:%trim(mbuffer)), D_CAPTION)
+
+    return
+
+;-----------------------------------------------------------------------------
+
+inPlaceEncrypt,
+
+    find(chan,, ^FIRST)
+    repeat
+    begin
+        reads(chan, ccData, eof)
+
+        ccData.encryptedCC = Encryption.Encrypt(ccData.encryptedCC)
+
+        write(chan, ccData) [ERR=writeError1]
+writeError1,
+    end
+eof,
+
+    return
+
+;-----------------------------------------------------------------------------
+
+inPlaceDecrypt,
+
+    find(chan,, ^FIRST)
+    repeat
+    begin
+        reads(chan, ccData, eof2)
+
+        ccData.encryptedCC = Encryption.Decrypt(ccData.encryptedCC)
+
+        write(chan, ccData) [ERR=writeError2]
+writeError2,
+    end
+eof2,
+
+    return
+endmain
+
+;++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+subroutine setupEncryption
+    req in  aEncryptStyle   ,i
+    req out aEncryption     ,@SynPSG.Core.Utilities.Encryption.SynEncrypt
+    endparams
+
+record
+    padBuffer           ,i4
+endrecord
+proc
+
+    ;;create Encryption class/object
+    using aEncryptStyle select
+    (ENCRYPT_FIELD, ENCRYPT_RECORD),
+        padBuffer = 1
+    (), ;;ENCRYPT_FIELD_INPLACE, none
+        padBuffer = 0
+    endusing
+
+    begin
+.ifdef USING_ENCRYPTION_AES
+        data salt   ,a8 ,'ABCDEFGH'
+        data IV     ,a16 ,'ABCDEFGHIJKLMNOP'
+        aEncryption = new SynEncrypt(ENCRYPTION_AES_TYPE, salt, IV, padBuffer)
+.else
+        data salt   ,a8 ,'ABCDEFGH'
+        data IV     ,a8 ,'ABCDEFGH'
+        aEncryption = new SynEncrypt(EncryptionType.DES3, salt, IV, padBuffer)
+.endc
+    end
+
+    xreturn
+
+endsubroutine
+
+;++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+; List load method
+
+subroutine ccTest_load
+        a_listid        ,n                      ; List id
+        a_req           ,n                      ; Request flag
+        a_data          ,a                      ; Item data
+        a_inpid         ,n                      ; Input window id
+        a_disable       ,n                      ; (Optional) Disable flag
+        a_index         ,n                      ; Loading index
+        aEncryption     ,@SynPSG.Core.Utilities.Encryption.SynEncrypt
+endparams
+
+.include "WND:tools.def"
+
+record ccData
+.include 'CCrec.inc'
+
+external common
+        chan            ,i4
+        encryptStyle    ,i4
+endcommon
+
+proc
+
+        if(a_index == 1)
+            find(chan,, ^FIRST) [ERR=nomore_items]
+
+        reads(chan, ccData, nomore_items)
+
+        using encryptStyle select
+        (ENCRYPT_FIELD_INPLACE),
+            ccData.encryptedCC = aEncryption.Decrypt(ccData.encryptedCC)
+        (ENCRYPT_FIELD),
+            ccData.encryptedCC = aEncryption.Decrypt(ccData.encryptedCC)
+        (ENCRYPT_RECORD),
+            ccData.encryptData = aEncryption.Decrypt(ccData.encryptedData)
+        endusing
+
+        i_display(a_inpid,, ccData)
+        a_data = ccData
+        xreturn
+
+nomore_items,
+        a_req = D_LEOF
+        clear a_data
+        xreturn
+endsubroutine
+
+;+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+; Change Method
+
+function ccChange ,^val ,reentrant
+    a_data_entered      ,a      ; A buffer containg the field data as
+                                ; entered by the user.
+    a_data_stored       ,a      ; A buffer for the final storage of the
+                                ; data.
+    a_pending_status    ,n      ; The result of Toolkit's field
+                                ; validations.
+    .include "WND:inpinf.def"   ; Group argument of input info
+    a_inprec            ,a      ; The data_area argument passed to the
+                                ;  calling input routine.
+endparams
+
+.include "WND:tools.def"
+
+record ccData
+.include 'CCrec.inc'
+
+proc
+
+    ccData = a_inprec
+    if(SynPSG.Core.Utilities.CC.SynCC.isValid(integer(ccData.ccType), a_data_entered) == FALSE)
+    begin
+        a_pending_status = D_EMITTEDERR
+        u_message("Invalid credit Card #")
+    end
+    freturn a_pending_status
+endfunction
+
+;+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+

@@ -1,0 +1,408 @@
+;;**********************************************************************
+;;
+;; Title:       CCutils.dbc
+;;
+;; Type:        Class
+;;
+;; Description: Credit Card utility routines
+;;
+;; Author:      William Hawkins, Synergex Professional Services Group
+;;
+;; Copyright    © 2009 Synergex International Corporation.  All rights reserved.
+;;
+;; WARNING:     All content constituting or related to this code ("Code") is the
+;;              property of Synergex International Corporation ("Synergex") and
+;;              is protected by U.S. and international copyright laws.
+;;              If you were given this Code by a Synergex employee then you may
+;;              use and modify it freely for use within your applications.
+;;
+;;              However, you may use the Code only for your personal use.
+;;              Any other use, unless otherwise authorized in writing by
+;;              Synergex is strictly prohibited.  You may not under any
+;;              circumstances distribute this Code, or any modified version
+;;              or part of this Code, to any third party without first
+;;              obtaining written permission to do so from Synergex.
+;;              In using this Code you accept that it is provided as is,
+;;              and without support or warranty of any kind.
+;;
+;;              Neither Synergex nor the author accept any responsibility
+;;              for any losses or damages of any nature which may arise
+;;              from the use of this Code.  This header information must
+;;              remain unaltered in the Code at all times.  Possession
+;;              of this Code, or any modified version or part of this Code,
+;;              indicates your acceptance of these terms.
+;;
+;+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+namespace SynPSG.Core.Utilities.CC
+
+;; maximum size of credit card
+.define D_CREDIT_CARD   a16
+
+    public enum CardType
+        Unknown     ,0
+        MasterCard
+        Visa
+        Amex
+        DinersClub
+        Discover
+        CarteBlanche
+        enRoute
+        JCB
+        BankCard
+        Maestro
+        ChinaUnionPay
+    ;; When adding new card types, please update methods getCCtype & getCCname
+    endenum
+
+
+    public class SynCC
+
+        ;;;<summary>
+        ;;;Check credit card is a valid card number
+        ;;;</summary>
+        ;;; <param name="a_ccType">Card type</param>
+        ;;; <param name="a_ccNumber">Credit card number</param>
+        public static method isValid ,boolean
+        req in      a_ccType    ,SynPSG.Core.Utilities.CC.CardType
+        req in      a_ccNumber  ,int
+        endparams
+
+        static record
+            cardNumber      ,D_CREDIT_CARD
+        endrecord
+
+        proc
+            cardNumber = a_ccNumber [LEFT]
+            mreturn isValid(a_ccType, cardNumber(1:%trim(cardNumber)))
+        endmethod
+
+        ;;;<summary>
+        ;;;Check credit card is a valid card number
+        ;;;</summary>
+        ;;; <param name="a_ccType">Card type</param>
+        ;;; <param name="a_ccNumber">Credit card number</param>
+        public static method isValid ,boolean
+        req in      a_ccType    ,SynPSG.Core.Utilities.CC.CardType
+        req in      a_ccNumber  ,string
+        endparams
+
+        record
+            cardNumber      ,D_CREDIT_CARD
+        endrecord
+
+        proc
+            cardNumber = a_ccNumber
+            mreturn isValid(a_ccType, cardNumber(1:%trim(cardNumber)))
+        endmethod
+
+        ;;;<summary>
+        ;;;Check credit card is a valid card number
+        ;;;</summary>
+        ;;; <param name="a_ccType">Card type</param>
+        ;;; <param name="a_ccNumber">Credit card number</param>
+        public static method isValid ,boolean
+        req in      a_ccType    ,i
+        req in      a_ccNumber  ,a
+        endparams
+        proc
+            mreturn isValid(getCCtype(a_ccType), a_ccNumber)
+        endmethod
+
+        ;;;<summary>
+        ;;;Check credit card is a valid card number
+        ;;;</summary>
+        ;;; <param name="a_ccType">Card type</param>
+        ;;; <param name="a_ccNumber">Credit card number</param>
+        ;;;<remarks>
+        ;;;Reference: http://en.wikipedia.org/wiki/Credit_card_numbers
+        ;;;</remark>
+        public static method isValid ,boolean
+        req in      a_ccType    ,SynPSG.Core.Utilities.CC.CardType
+        req in      a_ccNumber  ,a
+        endparams
+
+        stack record
+            cardNumber      ,D_CREDIT_CARD
+            cardLen         ,i4
+            ccType          ,SynPSG.Core.Utilities.CC.CardType
+        endrecord
+
+        proc
+            cardNumber = a_ccNumber
+            cardLen = 0
+
+            using cardNumber select
+            ('54', '55'),
+            begin ;Can be US & Canada Diners Club or Mastercard
+                if(a_ccType == CardType.DinersClub) then
+                    ccType = CardType.DinersClub
+                else
+                    ccType = CardType.MasterCard
+                cardLen = 16
+            end
+            ('51', '52', '53', '54', '55'),
+            begin
+                ccType = CardType.MasterCard
+                cardLen = 16
+            end
+            ('417500', '4917', '4913', '4508', '4844'),
+            begin ;Visa Electron
+                ccType = CardType.Visa
+                cardLen = 16
+            end
+            ('4'),
+            begin
+                ccType = CardType.Visa
+                using %trimz(cardNumber) select
+                (16, 13),
+                    cardLen = %trim(cardNumber)
+                endusing
+            end
+            ('34', '37'),
+            begin
+                ccType = CardType.Amex
+                cardLen = 15
+            end
+            ('6011', '644', '645', '646', '647', '648', '649', '65'),
+            begin
+                ccType = CardType.Discover
+                cardLen = 15
+            end
+            ('622'),
+            begin
+                ccType = CardType.ChinaUnionPay
+                using ^d(cardNumber(4:3)) select
+                (126 thru 925),
+                begin
+                    using %trim(cardNumber) select
+                    (16 thru 19),
+                        cardLen = %trim(cardNumber)
+                    endusing
+                end
+                endusing
+            end
+            ('624', '625', '626'),
+            begin
+                ccType = CardType.ChinaUnionPay
+                using %trim(cardNumber) select
+                (16 thru 19),
+                    cardLen = %trim(cardNumber)
+                endusing
+            end
+            ('628'),
+            begin
+                ccType = CardType.ChinaUnionPay
+                using ^d(cardNumber(4:3)) select
+                (200 thru 899),
+                begin
+                    using %trim(cardNumber) select
+                    (16 thru 19),
+                        cardLen = %trim(cardNumber)
+                    endusing
+                end
+                endusing
+            end
+            ('36'),
+            begin
+                ccType = CardType.DinersClub
+                cardLen = 14
+            end
+            ('38', '39', '3095'),
+            begin ;no longer being issued
+                ccType = CardType.DinersClub
+                cardLen = 14
+            end
+            ('300', '301', '302', '303', '304', '305'),
+            begin ;issued by diners club
+                ccType = CardType.CarteBlanche
+                cardLen = 14
+            end
+            ('2014', '2149'),
+            begin ;issued by diners club
+                ccType = CardType.enRoute
+                cardLen = 15
+            end
+            ('35'),
+            begin
+                ccType = CardType.JCB
+                using ^d(cardNumber(3:2)) select
+                (28 thru 89),
+                    cardLen = 16
+                endusing
+            end
+            ('5610', '560221', '560222', '560223', '560224', '560225'),
+            begin
+                ccType = CardType.Bankcard
+                cardLen = 16
+            end
+            ('5018', '5020', '5038', '6304', '6759', '6761', '6763'),
+            begin
+                ccType = CardType.Maestro
+                using %trim(cardNumber) select
+                (12 thru 19),
+                    cardLen = %trim(cardNumber)
+                endusing
+            end
+            ('4903', '4905', '4911', '4936', '564182', '633110', '6333', '6759'),
+            begin ;switch
+                ccType = CardType.Maestro
+                using %trim(cardNumber) select
+                (16, 18, 19),
+                    cardLen = %trim(cardNumber)
+                endusing
+            end
+            ('6334', '6767'),
+            begin ;solo
+                ccType = CardType.Maestro
+                using %trim(cardNumber) select
+                (16, 18, 19),
+                    cardLen = %trim(cardNumber)
+                endusing
+            end
+            endusing
+
+            if(cardLen > 0 && ccType == a_ccType)
+            begin
+                if(%trimz(cardNumber) != cardLen)
+                    mreturn FALSE
+                if(mod10(CardNumber(1:cardLen)) == FALSE)
+                    mreturn FALSE
+                mreturn TRUE
+            end
+            mreturn FALSE
+        endmethod
+
+        ;;;<summary>
+        ;;;Get Card Name
+        ;;;</summary>
+        ;;; <param name=""></param>
+        ;;; <param name="a_ccType">Card type</param>
+        public static method getCCname ,string
+            req in a_ccType     ,i
+        endparams
+        proc
+            mreturn getCCname(getCCtype(a_ccType))
+        endmethod
+
+        ;;;<summary>
+        ;;;Get Card Name
+        ;;;</summary>
+        ;;; <param name="a_ccType">Card type</param>
+        public static method getCCname ,string
+            req in a_ccType     ,SynPSG.Core.Utilities.CC.CardType
+        endparams
+        proc
+            using a_ccType select
+            (CardType.MasterCard),
+                mreturn 'MasterCard'
+            (CardType.Visa),
+                mreturn 'Visa'
+            (CardType.Amex),
+                mreturn 'Amex'
+            (CardType.DinersClub),
+                mreturn 'DinersClub'
+            (CardType.Discover),
+                mreturn 'Discover'
+            (CardType.CarteBlanche),
+                mreturn 'CarteBlanche'
+            (CardType.enRoute),
+                mreturn 'enRoute'
+            (CardType.JCB),
+                mreturn 'JCB'
+            (CardType.BankCard),
+                mreturn 'BankCard'
+            (CardType.Maestro),
+                mreturn 'Maestro'
+            (CardType.ChinaUnionPay),
+                mreturn 'ChinaUnionPay'
+            endusing
+            mreturn ''
+        endmethod
+
+        ;;;<summary>
+        ;;;Get CardType enumeration
+        ;;;</summary>
+        ;;; <param name="a_ccType">Card type</param>
+        public static method getCCtype ,SynPSG.Core.Utilities.CC.CardType
+            req in a_ccType     ,i
+        endparams
+        proc
+            using a_ccType select
+            (1),
+                mreturn CardType.MasterCard
+            (2),
+                mreturn CardType.Visa
+            (3),
+                mreturn CardType.Amex
+            (4),
+                mreturn CardType.DinersClub
+            (5),
+                mreturn CardType.Discover
+            (6),
+                mreturn CardType.CarteBlanche
+            (7),
+                mreturn CardType.enRoute
+            (8),
+                mreturn CardType.JCB
+            (9),
+                mreturn CardType.BankCard
+            (10),
+                mreturn CardType.Maestro
+            (11),
+                mreturn CardType.ChinaUnionPay
+            endusing
+            mreturn CardType.Unknown
+        endmethod
+
+        ;-----------------------------------------------------------------------------
+
+        ;;;<summary>
+        ;;;Modulus 10 checker.
+        ;;;</summary>
+        ;;; <param name="aText">string containing number for mod10 validation</param>
+        private static method mod10 ,boolean
+            req in aText    ,a
+        endparams
+
+        record
+            mod         ,int
+            pos         ,int
+            dec         ,int
+        endrecord
+        proc
+            mod = 0
+            for pos from 1 thru ^size(aText) by 2
+            begin
+                using aText(pos:1) select
+                ('0' thru '9'),
+                begin
+                    dec = ^d(aText(pos:1))
+                    mod += dec
+                end
+                (),
+                    mreturn FALSE
+                endusing
+            end
+            for pos from 2 thru ^size(aText) by 2
+            begin
+                using aText(pos:1) select
+                ('0' thru '9'),
+                begin
+                    dec = ^d(aText(pos:1))
+                    mod += (dec*2)
+                end
+                (),
+                    mreturn FALSE
+                endusing
+            end
+            if(mod && mod == ((mod/10)*10))
+                mreturn TRUE
+            mreturn FALSE
+
+        endmethod
+
+    endclass
+
+endnamespace
+
